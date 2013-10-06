@@ -18,6 +18,7 @@ struct httpsrv_data{
 struct httpcli_data{
     struct ev_header hdr;
 
+    char buf[4096];
     struct http_parser hp;
     struct http_parser_settings hp_set;
 };
@@ -66,17 +67,14 @@ static void httpcli_callback(struct epoll_event *evt){
     int ret;
 
     struct httpcli_data *data;
-    char *buf;
     int readc;
 
     data = (struct httpcli_data*)evt->data.ptr;
 
     if(evt->events & EPOLLIN){
-	buf = malloc(4096);
-	while((readc = read(data->hdr.fd,buf,4096)) > 0){
-	    http_parser_execute(&data->hp,&data->hp_set,buf,readc);
+	while((readc = read(data->hdr.fd,data->buf,4096)) > 0){
+	    http_parser_execute(&data->hp,&data->hp_set,data->buf,readc);
 	}
-	free(buf);
     }
     if(evt->events & EPOLLRDHUP){
 	http_parser_execute(&data->hp,&data->hp_set,NULL,0);
@@ -84,13 +82,18 @@ static void httpcli_callback(struct epoll_event *evt){
 }
 static int httpreq_header_callback(struct http_parser *hp,const char *at,size_t len){
 
+    return 0;
 }
 static int httpreq_complete_callback(struct http_parser *hp){
     struct httpcli_data *data;
 
+    printf("test\n");
+
     data = (struct httpcli_data*)hp->data;
-    write(data->hdr.fd,"Hello World",1024);
+    write(data->hdr.fd,"Hello World",256);
     close(data->hdr.fd);
+
+    free(data);
 
     return 0;
 }
@@ -149,7 +152,7 @@ int main(void){
     bind(skfd,(struct sockaddr*)&skin,sizeof(skin));
     listen(skfd,65536); 
 
-    for(i = 2;i > 0;i--){
+    for(i = 1;i > 0;i--){
 	if(i > 1 && fork() != 0){
 	    continue;
 	}
