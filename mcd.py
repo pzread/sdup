@@ -20,9 +20,9 @@ class AsyncMCD:
         self._opaque_count = 0
         self._opaque_map = {}
 
-        self._stream = tornado.iostream.IOStream(
+        self._stm = tornado.iostream.IOStream(
                 socket.socket(socket.AF_INET,socket.SOCK_STREAM,0))
-        self._stream.connect(('localhost',11211))
+        self._stm.connect(('localhost',11211))
 
         self._recv_loop()
 
@@ -61,7 +61,7 @@ class AsyncMCD:
         header = self._request_header(0x00,keylen,0,0,keylen,opaque,0)
         data = bytes(bytearray().join([header,key]))
 
-        self._stream.write(data)
+        self._stm.write(data)
     
     @return_future
     def mget(self,keys,callback):
@@ -105,7 +105,7 @@ class AsyncMCD:
             header = self._request_header(0x09,keylen,0,0,keylen,opaque,0)
             data = bytes(bytearray().join([header,key]))
 
-            self._stream.write(data)
+            self._stm.write(data)
         
         key = bytes(keys[-1],'utf-8')
         keylen = len(key)
@@ -115,7 +115,7 @@ class AsyncMCD:
         header = self._request_header(0x00,keylen,0,0,keylen,opaque,0)
         data = bytes(bytearray().join([header,key]))
 
-        self._stream.write(data)
+        self._stm.write(data)
 
     @return_future
     def set(self,key,value,expiration = 0,callback = None):
@@ -165,7 +165,26 @@ class AsyncMCD:
                 opcode,keylen,extralen,0,extralen + keylen + valuelen,opaque,0)
         data = bytes(bytearray().join([header,extra,key,value]))
 
-        self._stream.write(data)
+        self._stm.write(data)
+
+    @return_future
+    def delete(self,ori_key,callback):
+        def _recv(opcode,status,opaque,cas,extra,key,value):
+            del self._opaque_map[opaque]
+            callback(None)
+
+        if not isinstance(ori_key,str):
+            raise TypeError
+
+        key = bytes(ori_key,'utf-8')
+        keylen = len(key)
+
+        opaque = self._get_opaque(_recv)
+        header = self._request_header(0x04,keylen,0,0,keylen,opaque,0)
+        data = bytes(bytearray().join([header,key]))
+
+        self._stm.write(data)
+
 
     def _get_opaque(self,data):
         self._opaque_count += 1
@@ -184,7 +203,7 @@ class AsyncMCD:
                 value = data[extralen + keylen:totallen]
 
                 self._opaque_map[opaque](opcode,status,opaque,cas,extra,key,value)
-                self._stream.read_bytes(24,__recv)
+                self._stm.read_bytes(24,__recv)
 
             header = struct.unpack('!BBHBBHIIQ',data)
             opcode = header[1]
@@ -197,30 +216,13 @@ class AsyncMCD:
 
             if totallen == 0:
                 self._opaque_map[opaque](opcode,status,opaque,cas,bytes(),bytes(),bytes())
-                self._stream.read_bytes(24,__recv)
+                self._stm.read_bytes(24,__recv)
 
             else:
-                self._stream.read_bytes(totallen,___recvdata)
+                self._stm.read_bytes(totallen,___recvdata)
 
-        self._stream.read_bytes(24,__recv)
+        self._stm.read_bytes(24,__recv)
 
-    @return_future
-    def delete(self,ori_key,callback):
-        def _recv(opcode,status,opaque,cas,extra,key,value):
-            del self._opaque_map[opaque]
-            callback(None)
-
-        if not isinstance(ori_key,str):
-            raise TypeError
-
-        key = bytes(ori_key,'utf-8')
-        keylen = len(key)
-
-        opaque = self._get_opaque(_recv)
-        header = self._request_header(0x04,keylen,0,0,keylen,opaque,0)
-        data = bytes(bytearray().join([header,key]))
-
-        self._stream.write(data)
 
 '''
 @coroutine
