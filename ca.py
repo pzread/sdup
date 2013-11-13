@@ -1,6 +1,7 @@
 import struct
 import socket
 import collections
+import time
 import datetime
 import uuid
 
@@ -18,12 +19,32 @@ class Cursor:
         self._curid = curid
         self._db = db
 
+        self._res = []
+        self.rowcount = 0
+
     @return_future
     def execute(self,statem,param = [],callback = None):
         def _cb(data,err = None):
-            pass
+            if err != None:
+                raise err
+            
+            if data == None:
+                self._res = []
+                self.rowcount = 0
+
+            else:
+                self._res = data
+                self.rowcount = len(data)
+
+            callback(None)
 
         self._db._execute(self._curid,statem,param,_cb)
+
+    def fetchone(self):
+        return self._res[0]
+
+    def __iter__(self):
+        return self._res.__iter__()
 
 class AsyncCA:
     def __init__(self,keysp):
@@ -45,7 +66,6 @@ class AsyncCA:
                 return
 
             self._state = self.STATE_READY
-            print('ready')
             self._run_pend()
 
         self.STATE_PEND = 0
@@ -74,23 +94,25 @@ class AsyncCA:
         callback(cur)
 
     def _parse_res(self,data):
-        print(data)
-        off = 0
-        kind, = struct.unpack('!I',data[:4])
+        kind, = struct.unpack('!I',data[0:4])
 
-        if kind == 0x0002:
+        if kind == 0x0001:
+            return None
+
+        elif kind == 0x0002:
             flags,col_count = struct.unpack('!II',data[4:12])
-            print(flags)
-            print(col_count)
             
             off = 12
-            if flags == 0x0002:
+            if (flags & 0x0001) != 0x0001:  #Global_tables_spec
+                col_count -= 2
+
+            if (flags & 0x0002) == 0x0002:  #Has_more_pages
                 size, = struct.unpack('!I',data[12:16])
                 page_stat = data[12:12 + size]
                 print(page_stat)
 
-            elif flags == 0x0003:
-                return
+            if (flags & 0x0004) == 0x0004:  #No_metadata
+                return None
 
             size, = struct.unpack('!H',data[off:off + 2])
             kp_name = data[off + 2:off + 2 + size].decode('utf-8')
@@ -99,9 +121,6 @@ class AsyncCA:
             size, = struct.unpack('!H',data[off:off + 2])
             tb_name = data[off + 2:off + 2 + size].decode('utf-8')
             off += 2 + size
-
-            print(kp_name)
-            print(tb_name)
 
             collist = []
             for colidx in range(col_count):
@@ -116,26 +135,37 @@ class AsyncCA:
 
             row_count, = struct.unpack('!I',data[off:off + 4])
             off += 4
+            reslist = []
             for rowidx in range(row_count):
+                rowlist = []
                 for colidx in range(col_count):
                     col_name,type_id = collist[colidx]
 
-                    try:
+                    size, = struct.unpack('!i',data[off:off + 4])
+                    off += 4
+                    if size == -1:
+                        val = None
+
+                    else:
                         if type_id == 0x0000:      #Custom
-                            size, = struct.unpack('!H',data[off:off + 2])
-                            strg = data[off + 2:off + 2 + size].decode('utf-8')
-                            off += 2 + size
+                            stlen, = struct.unpack('!H',data[off:off + 2])
+                            val = data[off + 2:off + 2 + stlen].decode('utf-8')
 
                         elif type_id == 0x0001:    #ascii
                             raise NotImplementedError
                         elif type_id == 0x0002:    #bigint
                             raise NotImplementedError
                         elif type_id == 0x0003:    #blob
-                            raise NotImplementedError
+                            val = data[off:off + size]
+                            off += size
+
                         elif type_id == 0x0004:    #boolean
-                            raise NotImplementedError
+                            assert size == 1,'Boolean > 1 byte'
+                            val = bool(data[off:off + 1][0])
+
                         elif type_id == 0x0005:    #counter
-                            raise NotImplementedError
+                            val, = struct.unpack('!q',data[off:off + 8])
+
                         elif type_id == 0x0006:    #decimal
                             raise NotImplementedError
                         elif type_id == 0x0007:    #double
@@ -143,30 +173,21 @@ class AsyncCA:
                         elif type_id == 0x0008:    #float
                             raise NotImplementedError
                         elif type_id == 0x0009:    #int
-                            raise NotImplementedError
-                        elif type_id == 0x000B:    #timestamp
-                            size,ts = struct.unpack('!IQ',data[off:off + 12])
-                            assert size == 8
-                            off += 12
-                            print(
-                                datetime.datetime.utcfromtimestamp(ts // 1000))
+                            val, = struct.unpack('!i',data[off:off + 4])
 
-                        elif type_id == 0x000C:    #uuid
-                            size, = struct.unpack('!I',data[off:off + 4])
-                            val = uuid.UUID(
-                                    bytes = data[off + 4:off + 4 + size])
-                            off += 4 + size
-                            print(val)
+                        elif type_id == 0x000B:    #timestamp
+                            ts, = struct.unpack('!Q',data[off:off + 8])
+                            val = datetime.datetime.utcfromtimestamp(
+                                    ts // 1000)
+                            val = val.replace(tzinfo = datetime.timezone.utc)
+
+                        elif type_id == 0x000C or type_id == 0x000F:    #uuid
+                            val = uuid.UUID(bytes = data[off:off + size])
 
                         elif type_id == 0x000D:    #varchar
-                            size, = struct.unpack('!I',data[off:off + 4])
-                            strg = data[off + 4:off + 4 + size].decode('utf-8')
-                            off += 4 + size
-                            print(strg)
+                            val = data[off:off + size].decode('utf-8')
 
                         elif type_id == 0x000E:    #varint
-                            raise NotImplementedError
-                        elif type_id == 0x000F:    #timeuuid
                             raise NotImplementedError
                         elif type_id == 0x0010:    #inet
                             raise NotImplementedError
@@ -176,10 +197,14 @@ class AsyncCA:
                             raise NotImplementedError
                         elif type_id == 0x0022:    #set
                             raise NotImplementedError
-                    except NotImplementedError:
-                        pass
 
-            return 
+                        off += size
+
+                    rowlist.append(val)
+
+                reslist.append(rowlist)
+
+            return reslist
             
         elif kind == 0x0003:
             size, = struct.unpack('!H',data[4:6])
@@ -188,27 +213,51 @@ class AsyncCA:
     def _execute(self,curid,statem,param,callback,force = False):
         def _cb(opcode,data):
             if opcode == 0x08:
-                try:
-                    self._parse_res(data)
-                except Exception as e:
-                    print(e)
-
-                callback(data)
+                callback(self._parse_res(data))
 
             else:
-                callback(None,err = opcode)
+                code,size = struct.unpack('!IH',data[:6])
+                val = data[6:6 + size].decode('utf-8')
+                callback(None,err = Exception(val))
+
+        def _bytify(val):
+            if isinstance(val,str):
+                return val.encode('utf-8')
+
+            elif isinstance(val,int):
+                return struct.pack('!I',val)
+
+            elif isinstance(val,uuid.UUID):
+                return val.bytes
+
+            elif isinstance(val,datetime.datetime):
+                if val.tzinfo == None:
+                    delta = datetime.timedelta(seconds=time.timezone)
+                    utctime = (val + delta).replace(
+                            tzinfo = datetime.timezone.utc)
+
+                else:
+                    utctime = val.astimezone(datetime.timezone.utc)
+
+                return struct.pack('!Q',round(utctime.timestamp() * 1000))
+
+            else:
+                raise TypeError
 
         data = bytearray(self._notat_lstring(statem))
         data.extend(struct.pack('!HBH',0x0001,0x01,len(param)))
         for val in param:
-            if isinstance(val,str):
-                data.extend(self._notat_bytes(val.encode('utf-8')))
+            if isinstance(val,list):
+                listdata = bytearray(struct.pack('!H',len(val)))
+                for elem in val:
+                    elemdata = _bytify(elem)
+                    listdata.extend(struct.pack('!H',len(elemdata)))
+                    listdata.extend(elemdata)
 
-            elif isinstance(val,int):
-                data.extend(self._notat_bytes(struct.pack('I',val)))
-                
+                data.extend(self._notat_bytes(listdata))
+
             else:
-                raise TypeError
+                data.extend(self._notat_bytes(_bytify(val)))
 
         pendid = self._send_req(0x07,data,_cb,force)
         if pendid != None:
@@ -301,7 +350,10 @@ class AsyncCA:
 @tornado.gen.coroutine
 def test():
     cur = yield db.cursor('sprout')
-    yield cur.execute('SELECT * FROM POST;')
+    yield cur.execute('SELECT aaa FROM POST;')
+
+    for data in cur:
+        print(data)
 
 if __name__ == '__main__':
     db = AsyncCA('SPROUT')
