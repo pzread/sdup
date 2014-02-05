@@ -6,9 +6,6 @@ from tornado.ioloop import IOLoop
 from tornado.stack_context import wrap
 from tornado.concurrent import return_future
 
-import time
-from tornado.gen import coroutine
-
 class AsyncMCD:
     def __init__(self):
         self.TYPE_INT = 0
@@ -152,7 +149,7 @@ class AsyncMCD:
             value = bytes(value,'utf-8')
 
         else:
-            value_type = 2
+            value_type = self.TYPE_JSON
             value = bytes(json.dumps(value),'utf-8')
 
         valuelen = len(value)
@@ -222,16 +219,3 @@ class AsyncMCD:
                 self._stm.read_bytes(totallen,___recvdata)
 
         self._stm.read_bytes(24,__recv)
-
-
-'''
-@coroutine
-def test():
-    ret = yield mc.get('test')
-    yield mc.delete('test')
-    print(ret)
-
-mc = AsyncMCD()
-test()
-tornado.ioloop.IOLoop.instance().start()
-'''
