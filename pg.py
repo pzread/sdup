@@ -1,7 +1,7 @@
 import random
-from collections import deque
-
+import datetime
 import psycopg2
+from collections import deque
 from tornado.stack_context import wrap
 from tornado.ioloop import IOLoop
 from tornado.concurrent import return_future
@@ -107,7 +107,9 @@ class WrapCursor:
         self.statusmessage = ''
 
 class AsyncPG:
-    def __init__(self,dbname,dbuser,dbpasswd,dbschema = 'public'):
+    def __init__(self,dbname,dbuser,dbpasswd,
+            dbschema = 'public',dbtz = '+0'):
+
         self.INITCONN_SHARE = 4
         self.INITCONN_FREE = 16
         self.OPER_CURSOR = 0
@@ -118,9 +120,25 @@ class AsyncPG:
         self._dbuser = dbuser
         self._dbpasswd = dbpasswd
         self._dbschema = dbschema
+        self._dbtz = dbtz
         self._share_connpool = []
         self._free_connpool = []
         self._conn_fdmap = {}
+
+        class _InfDateAdapter:
+            def __init__(self,wrapped):
+                self.wrapped = wrapped
+
+            def getquoted(self):
+                if self.wrapped == datetime.datetime.max:
+                    return b"'infinity'::date"
+                elif self.wrapped == datetime.datetime.min:
+                    return b"'-infinity'::date"
+                else:
+                    return psycopg2.extensions.TimestampFromPy(
+                            self.wrapped).getquoted()
+
+        psycopg2.extensions.register_adapter(datetime.datetime,_InfDateAdapter)
 
         for i in range(self.INITCONN_SHARE):
             conn = self._create_conn()
@@ -196,9 +214,14 @@ class AsyncPG:
             self._close_conn(conn)
 
     def _create_conn(self):
-        dbconn = psycopg2.connect(database = self._dbname,user = self._dbuser,
-                    password = self._dbpasswd,async = 1,
-                    options = '-c search_path=' + self._dbschema)
+        dbconn = psycopg2.connect(database = self._dbname,
+                                user = self._dbuser,
+                                password = self._dbpasswd,
+                                async = 1,
+                                options = (
+                                    '-c search_path=%s '
+                                    '-c timezone=%s'
+                                )%(self._dbschema,self._dbtz))
     
         conn = [dbconn.fileno(),deque(),False,None,dbconn]
         self._conn_fdmap[conn[0]] = conn
@@ -256,7 +279,6 @@ class AsyncPG:
 
                 elif oper == self.OPER_EXECUTE:
                     cur,sql,param = data
-                    print(cur)
                     cur.execute(sql,param)
                     conn[3] = cb
 
